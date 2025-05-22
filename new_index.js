@@ -3,22 +3,49 @@ import puppeteer from 'puppeteer';
 const BANK_CONFIGS = {
     CIMB: {
         url: "https://www.cimbniaga.co.id/content/cimb/id/personal/treasury/kurs-valas/jcr:content/responsivegrid/kurs_copy_copy_copy.get-content/",
-        parseNumber: (str) => parseFloat(str.replace(/,/g, '')),
-        selector: '.kurs-valas table tbody tr'
+        selector: '.kurs-valas table tbody tr',
+        eval: function (selector) {
+            const rows = document.querySelectorAll(selector);
+            for (const row of rows) {
+                const currency = row.querySelector('td.td1')?.innerText.trim();
+                if (currency === 'USD') {
+                    const parseNumber = (str) => parseFloat(str.replace(/,/g, ''))
+                    const buy = parseNumber(row.querySelector('td.td2')?.innerText);
+                    const sell = parseNumber(row.querySelector('td.td3')?.innerText);
+                    return {
+                        currency,
+                        buyRate: buy,
+                        sellRate: sell
+                    };
+                }
+            }
+
+        }
     },
     BCA: {
         url: "https://www.bca.co.id/id/informasi/kurs",
-        parseNumber: (str) => parseFloat(
-            str.replace(/\./g, '').replace(',', '.')
-        ),
-        selector: '.m-table-kurs tbody tr'
+        selector: 'tr[code="USD"]',
+        eval: function (selector) {
+            const row = document.querySelector(selector);
+            if (!row) return null;
+
+            const parser = (type) => {
+                const el = row.querySelector(`[rate-type="${type}"]`);
+                return el ? el.innerText.trim().replace(/\./g, '').replace(',', '.') : null;
+            }
+
+            return {
+                currency: "USD",
+                buy: parseFloat(parser("ERate-buy")),
+                sell: parseFloat(parser("ERate-sell"))
+            }
+        }
     }
 };
 
-const cimb_parser = async (bank) => {
+const parser = async (bank) => {
     const config = BANK_CONFIGS[bank.toUpperCase()];
     if (!config) throw new Error(`Unsupported bank: ${bank}`);
-
 
     const browser = await puppeteer.launch({ headless: true });
     const page = await browser.newPage();
@@ -28,22 +55,16 @@ const cimb_parser = async (bank) => {
 
     await page.waitForSelector(config.selector);
 
-    const usd = await page.evaluate(() => {
-        const rows = document.querySelectorAll(config.selector);
-        for (const row of rows) {
-            const currency = row.querySelector('td.td1')?.innerText.trim();
-            if (currency === 'USD') {
-                const buy = row.querySelector('td.td2')?.innerText.trim().replace(',', '');
-                const sell = row.querySelector('td.td3')?.innerText.trim().replace(',', '');
-                return {
-                    currency,
-                    buyRate: parseFloat(buy),
-                    sellRate: parseFloat(sell)
-                };
-            }
-        }
-        return null;
-    });
+    const usd = await page.evaluate(
+        (selector, fnStr) => {
+            const evalFn = new Function('selector', `return (${fnStr})(selector);`);
+            return evalFn(selector);
+        },
+        config.selector,
+        config.eval.toString()
+    );
+
+    console.log('Retrieving exchange rate for bank:', bank);
 
     if (usd) {
         console.log('USD Rate:', usd);
@@ -54,6 +75,5 @@ const cimb_parser = async (bank) => {
     await browser.close();
 };
 
-
-
-cimb_parser();
+parser('cimb');
+parser('bca');
